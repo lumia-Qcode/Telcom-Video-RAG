@@ -1,0 +1,4 @@
+# Ignore environment variables/secrets
+.env
+Videos/
+venv312/
