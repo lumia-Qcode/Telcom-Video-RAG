@@ -1,18 +1,24 @@
 """
 Validation strategies for checking whether a generated caption correctly
-identifies its expected subject.
+identifies its expected subject(s).
 
-Two independent signals are used:
-  1. CaptionKeywordValidator - does the caption TEXT mention the expected
-     subject (or a synonym of it)? Cheap, no extra API calls, but only as
-     good as the synonym list.
-  2. BoundingBoxValidator - does an object detector actually LOCATE the
-     expected subject in the frame? More rigorous (ties the claim to a real
-     region of the image) but costs an extra API call per video.
+A video can have MULTIPLE expected labels (e.g. a clip showing a technician
+working on a generator expects BOTH "technician" and "generator" to be
+identified). Each validator checks every expected label independently, then
+rolls the per-label results up into one overall classification:
 
-CombinedValidator runs both and produces one final classification, so the
-report reflects agreement/disagreement between the two signals rather than
-trusting either alone.
+  - "All Matched (n/n)"      -> every expected label was found
+  - "Partial Match (k/n)"    -> some, but not all, expected labels were found
+  - "None Matched (0/n)"     -> none of the expected labels were found
+  - "Unclassified"           -> no ground truth defined for this video
+
+Two independent signals are combined:
+  1. CaptionKeywordValidator - does the caption TEXT mention each expected
+     label (or a synonym of it)?
+  2. BoundingBoxValidator - does an object detector actually LOCATE each
+     expected label in the frame?
+
+CombinedValidator merges both per label, then produces the final rollup.
 """
 
 from abc import ABC, abstractmethod
@@ -24,6 +30,18 @@ from models import CaptionRecord, ValidationResult, BoundingBox
 from object_detector import ObjectDetector
 
 
+def _rollup(matches: Dict[str, bool]) -> str:
+    total = len(matches)
+    matched = sum(1 for v in matches.values() if v)
+    if total == 0:
+        return "Unclassified"
+    if matched == total:
+        return f"All Matched ({matched}/{total})"
+    if matched == 0:
+        return f"None Matched (0/{total})"
+    return f"Partial Match ({matched}/{total})"
+
+
 class Validator(ABC):
     @abstractmethod
     def validate(self, record: CaptionRecord, frame: Image.Image) -> ValidationResult:
@@ -31,45 +49,44 @@ class Validator(ABC):
 
 
 class CaptionKeywordValidator(Validator):
-    """Checks the caption text for the expected label or one of its synonyms."""
+    """Checks the caption text for each expected label or its synonyms."""
 
-    def __init__(self, ground_truth: Dict[str, str], synonyms: Dict[str, List[str]]):
+    def __init__(self, ground_truth: Dict[str, List[str]], synonyms: Dict[str, List[str]]):
         self.ground_truth = ground_truth
         self.synonyms = synonyms
 
     def validate(self, record: CaptionRecord, frame: Image.Image) -> ValidationResult:
-        expected_label = self.ground_truth.get(record.video)
+        expected_labels = self.ground_truth.get(record.video, [])
 
-        if not expected_label:
+        if not expected_labels:
             return ValidationResult(
-                video=record.video, expected_label="Not labeled",
+                video=record.video, expected_labels=[],
                 classification="Unclassified - add to GROUND_TRUTH",
-                caption_match=False, caption_matched_term="",
-                detection_match=False, detected_boxes={},
                 notes="No ground truth defined for this video.",
             )
 
         combined_text = f"{record.detailed_caption} {record.summary_caption}".lower()
-        terms = self.synonyms.get(expected_label, [expected_label])
 
-        matched_term = next((t for t in terms if t.lower() in combined_text), "")
-        matched = bool(matched_term)
+        caption_matches, matched_terms = {}, {}
+        for label in expected_labels:
+            terms = self.synonyms.get(label, [label])
+            matched_term = next((t for t in terms if t.lower() in combined_text), "")
+            caption_matches[label] = bool(matched_term)
+            matched_terms[label] = matched_term
 
         return ValidationResult(
-            video=record.video, expected_label=expected_label,
-            classification="True Positive" if matched else "False Positive",
-            caption_match=matched, caption_matched_term=matched_term,
-            detection_match=False, detected_boxes={},
+            video=record.video, expected_labels=expected_labels,
+            classification=_rollup(caption_matches),
+            caption_matches=caption_matches, matched_terms=matched_terms,
         )
 
 
 class BoundingBoxValidator(Validator):
-    """Checks whether an ObjectDetector actually locates the expected subject
-    in the frame, independent of what the caption text says."""
+    """Checks whether an ObjectDetector locates each expected label in the frame."""
 
     def __init__(
         self,
-        ground_truth: Dict[str, str],
+        ground_truth: Dict[str, List[str]],
         detection_query: Dict[str, str],
         detector: ObjectDetector,
     ):
@@ -78,39 +95,39 @@ class BoundingBoxValidator(Validator):
         self.detector = detector
 
     def validate(self, record: CaptionRecord, frame: Image.Image) -> ValidationResult:
-        expected_label = self.ground_truth.get(record.video)
+        expected_labels = self.ground_truth.get(record.video, [])
 
-        if not expected_label:
+        if not expected_labels:
             return ValidationResult(
-                video=record.video, expected_label="Not labeled",
+                video=record.video, expected_labels=[],
                 classification="Unclassified - add to GROUND_TRUTH",
-                caption_match=False, caption_matched_term="",
-                detection_match=False, detected_boxes={},
             )
 
-        query = self.detection_query.get(expected_label, expected_label)
-        boxes = self.detector.detect(frame, query)
-        detected = len(boxes) > 0
+        detection_matches, detected_boxes = {}, {}
+        for label in expected_labels:
+            query = self.detection_query.get(label, label)
+            boxes = self.detector.detect(frame, query)
+            detection_matches[label] = len(boxes) > 0
+            if boxes:
+                detected_boxes[label] = boxes
 
         return ValidationResult(
-            video=record.video, expected_label=expected_label,
-            classification="True Positive" if detected else "False Negative (not detected)",
-            caption_match=False, caption_matched_term="",
-            detection_match=detected,
-            detected_boxes={expected_label: boxes} if detected else {},
+            video=record.video, expected_labels=expected_labels,
+            classification=_rollup(detection_matches),
+            detection_matches=detection_matches, detected_boxes=detected_boxes,
         )
 
 
 class CombinedValidator(Validator):
-    """Merges the keyword and bounding-box signals into one final verdict.
+    """Merges the keyword and bounding-box signals into one final verdict
+    per expected label, then rolls up into an overall classification.
 
-    Priority logic:
-      - Detected AND caption mentions it   -> True Positive (both signals agree)
-      - Detected but caption text misses it -> True Positive (visual proof is
-        the stronger signal; caption wording is just imperfect)
-      - Not detected but caption claims it -> False Positive (caption is
-        likely hallucinating - nothing was actually located there)
-      - Neither                             -> False Negative
+    Per-label priority logic:
+      - Detected (regardless of caption wording) -> counts as matched
+        (visual proof is the stronger signal)
+      - Not detected but caption text claims it    -> counts as NOT matched,
+        flagged in notes as a likely caption hallucination
+      - Neither                                    -> not matched
     """
 
     def __init__(self, keyword_validator: CaptionKeywordValidator, box_validator: BoundingBoxValidator):
@@ -121,33 +138,34 @@ class CombinedValidator(Validator):
         keyword_result = self.keyword_validator.validate(record, frame)
         box_result = self.box_validator.validate(record, frame)
 
-        if keyword_result.expected_label == "Not labeled":
+        if not keyword_result.expected_labels:
             return keyword_result
 
-        caption_match = keyword_result.caption_match
-        detection_match = box_result.detection_match
+        final_matches: Dict[str, bool] = {}
+        notes_parts: List[str] = []
 
-        if detection_match:
-            classification = "True Positive"
-            notes = (
-                "Confirmed by both caption and detection."
-                if caption_match else
-                "Detected in frame, but caption text did not explicitly name it."
-            )
-        elif caption_match:
-            classification = "False Positive (caption only, not visually confirmed)"
-            notes = "Caption mentions the subject, but no matching object was located in the frame."
-        else:
-            classification = "False Negative"
-            notes = "Neither the caption nor object detection found the expected subject."
+        for label in keyword_result.expected_labels:
+            caption_ok = keyword_result.caption_matches.get(label, False)
+            detected = box_result.detection_matches.get(label, False)
+
+            final_matches[label] = detected or caption_ok
+
+            if detected and caption_ok:
+                notes_parts.append(f"{label}: confirmed by caption and detection")
+            elif detected and not caption_ok:
+                notes_parts.append(f"{label}: detected in frame, but caption did not name it")
+            elif caption_ok and not detected:
+                notes_parts.append(f"{label}: caption claims it, but not visually confirmed (possible hallucination)")
+            else:
+                notes_parts.append(f"{label}: not found by either signal")
 
         return ValidationResult(
             video=record.video,
-            expected_label=keyword_result.expected_label,
-            classification=classification,
-            caption_match=caption_match,
-            caption_matched_term=keyword_result.caption_matched_term,
-            detection_match=detection_match,
+            expected_labels=keyword_result.expected_labels,
+            classification=_rollup(final_matches),
+            caption_matches=keyword_result.caption_matches,
+            matched_terms=keyword_result.matched_terms,
+            detection_matches=box_result.detection_matches,
             detected_boxes=box_result.detected_boxes,
-            notes=notes,
+            notes="; ".join(notes_parts),
         )

@@ -3,3 +3,8 @@
 Videos/
 venv312/
 validation/__pycache__/
+captions/__pycache__/
+__pycache__/
+annotated_frames/
+video_report.csv
+video_report.xlsxs
