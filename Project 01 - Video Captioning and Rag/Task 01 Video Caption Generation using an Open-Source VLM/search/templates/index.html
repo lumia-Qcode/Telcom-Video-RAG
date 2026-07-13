@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Video Semantic Search</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background:#f7f7f9; }
+  h1 { color:#2E4053; }
+  p.subtitle { color:#666; }
+  #search-box { display:flex; gap:10px; margin-bottom:24px; }
+  #query { flex:1; padding:10px 14px; font-size:16px; border:1px solid #ccc; border-radius:6px; }
+  #search-btn { padding:10px 20px; font-size:16px; background:#2E4053; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+  #search-btn:hover { background:#1c2b38; }
+  .result { background:#fff; border:1px solid #e0e0e0; border-radius:8px; padding:16px; margin-bottom:14px; }
+  .result h3 { margin:0 0 6px 0; color:#2E4053; font-size:16px; }
+  .score { display:inline-block; background:#D5F5E3; color:#0b5d1e; padding:2px 10px; border-radius:12px; font-size:13px; margin-left:8px; }
+  .caption { color:#444; margin-top:8px; line-height:1.4; }
+  video { width:100%; margin-top:10px; border-radius:6px; }
+  #status { color:#777; margin-bottom:10px; }
+</style>
+</head>
+<body>
+  <h1>Video Semantic Search</h1>
+  <p class="subtitle">Search infrastructure video clips using natural language, e.g. "technician fixing a generator" or "cell tower at sunset".</p>
+
+  <div id="search-box">
+    <input type="text" id="query" placeholder="Describe what you're looking for..." autofocus />
+    <button id="search-btn">Search</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="results"></div>
+
+  <script>
+    const queryInput = document.getElementById("query");
+    const searchBtn = document.getElementById("search-btn");
+    const resultsDiv = document.getElementById("results");
+    const statusDiv = document.getElementById("status");
+
+    async function runSearch() {
+      const q = queryInput.value.trim();
+      if (!q) return;
+
+      statusDiv.textContent = "Searching...";
+      resultsDiv.innerHTML = "";
+
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+
+        statusDiv.textContent = data.results.length
+          ? `${data.results.length} result(s) found.`
+          : "No results found.";
+
+        data.results.forEach(r => {
+          const div = document.createElement("div");
+          div.className = "result";
+          div.innerHTML = `
+            <h3>${r.video} <span class="score">similarity: ${r.score}</span></h3>
+            <div class="caption">${r.caption}</div>
+            <video controls src="/videos/${encodeURIComponent(r.video)}"></video>
+          `;
+          resultsDiv.appendChild(div);
+        });
+      } catch (err) {
+        statusDiv.textContent = "Error running search - check the Flask console.";
+        console.error(err);
+      }
+    }
+
+    searchBtn.addEventListener("click", runSearch);
+    queryInput.addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+  </script>
+</body>
+</html>
