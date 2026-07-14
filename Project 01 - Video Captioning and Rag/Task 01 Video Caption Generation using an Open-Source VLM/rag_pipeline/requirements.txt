@@ -1,0 +1,10 @@
+chromadb>=0.5.0
+sentence-transformers>=3.0.0
+rank_bm25>=0.2.2
+flask>=3.0.0
+groq>=0.11.0
+python-dotenv>=1.0.0
+python-dateutil>=2.9.0
+
+# Only needed if you switch LLM_PROVIDER=anthropic in .env (paid option)
+# anthropic>=0.34.0

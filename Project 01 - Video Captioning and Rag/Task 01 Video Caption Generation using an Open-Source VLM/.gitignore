@@ -8,3 +8,10 @@ __pycache__/
 annotated_frames/
 video_report.csv
 video_report.xlsxs
+rag_pipeline/bm25_index.pkl
+rag_pipeline/Sample Queries.txt
+rag_pipeline/__pycache__/
+rag_pipeline/.env
+rag_pipeline/video_report.csv
+rag_pipeline/Videos/
+rag_pipeline/chroma_db/

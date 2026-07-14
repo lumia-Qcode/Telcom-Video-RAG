@@ -26,7 +26,7 @@ from validators import CaptionKeywordValidator, BoundingBoxValidator, CombinedVa
 from combined_report_builder import CombinedReportBuilder
 
 
-RUN_VALIDATION = False
+#RUN_VALIDATION = False
 RUN_VALIDATION = True   # <- comment out ONLY this line to skip validation and run captioning only
 
 
